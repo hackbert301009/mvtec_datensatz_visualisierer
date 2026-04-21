@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MVTec Anomaly Viewer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<header>
+  <h1>MVTec Anomaly Viewer</h1>
+  <span class="subtitle">PaDiM · XAI Heatmaps · Open Source</span>
+</header>
+
+<div class="layout">
+
+  <!-- LEFT: Categories -->
+  <aside class="panel-left">
+    <div class="panel-section">
+      <div class="panel-section-label">Dataset</div>
+      <div style="font-size:13px; color:var(--text-muted); padding: 2px 4px;">MVTec Anomaly Detection</div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-section-label">Categories</div>
+    </div>
+    <div class="scrollable" id="category-list">
+      <div class="empty-state" style="padding:20px;">
+        <div class="spinner"></div>
+        <p>Loading…</p>
+      </div>
+    </div>
+
+    <div class="train-section">
+      <button class="btn" id="train-btn" onclick="trainSelected()" disabled>
+        Train Selected
+      </button>
+      <div id="train-status"></div>
+    </div>
+  </aside>
+
+  <!-- MIDDLE: Defect types -->
+  <section class="panel-middle">
+    <div class="panel-section">
+      <div class="panel-section-label">Defect Types</div>
+    </div>
+    <div class="scrollable" id="defect-list">
+      <div class="empty-state">
+        <div class="icon">⬅</div>
+        <p>Select a category</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- RIGHT: Image grid -->
+  <main class="panel-right">
+    <div class="panel-right-header" id="breadcrumb">
+      <span>Select a category and defect type to browse images</span>
+    </div>
+    <div id="image-area">
+      <div class="empty-state">
+        <div class="icon">🔬</div>
+        <p>Images will appear here</p>
+        <p style="font-size:11px;">Click a defect type in the middle panel</p>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<!-- Modal -->
+<div class="modal-backdrop" id="modal-backdrop" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-title">Image</div>
+        <div class="modal-meta" id="modal-meta"></div>
+      </div>
+      <button class="close-btn" onclick="closeModal()">×</button>
+    </div>
+    <div class="modal-tabs">
+      <button class="tab-btn active" id="tab-original" onclick="switchTab('original')">Original</button>
+      <button class="tab-btn" id="tab-heatmap" onclick="switchTab('heatmap')">Heatmap</button>
+      <button class="tab-btn" id="tab-overlay" onclick="switchTab('overlay')">Overlay</button>
+    </div>
+    <div class="modal-body" id="modal-body">
+      <div class="modal-loading">
+        <div class="spinner"></div>
+        <span>Running inference…</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+dataset:
+  root: /mnt/029A05BB9A05AC6B/data/mvtec_anomaly_detection
+
+model:
+  backbone: efficientnet_b0
+  layers: [1, 2, 3]
+  image_size: 224
+  target_channels: 100
+  epsilon: 0.01
+  sigma: 4.0
+  device: auto
+
+training:
+  batch_size: 32
+  default_categories:
+    - bottle
+    - capsule
+
+inference:
+  # Score is normalized against the p95 of test/good images.
+  # Values > 1.0 mean the image is more anomalous than 95% of normal reference images.
+  threshold: 1.0
+  overlay_alpha: 0.5
+
+paths:
+  checkpoints: checkpoints
+  results: results
+
+api:
+  host: 0.0.0.0
+  port: 8000
