@@ -141,7 +141,9 @@ python -m backend.training.train --dataset mvtec_ad --all
 ```
 
 Checkpoints are saved to `checkpoints/{dataset_id}/{category}.pt`.  
-Training takes **3–8 minutes per category** on CPU.
+Training takes **3–8 minutes per category** on CPU, or **10–20 seconds** with a CUDA GPU.
+
+All 10 MVTec 3D AD categories (bagel, cable_gland, carrot, cookie, dowel, foam, peach, potato, rope, tire) can be trained in under 3 minutes total on a modern GPU.
 
 ---
 
