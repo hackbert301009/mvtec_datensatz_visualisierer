@@ -7,13 +7,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# Ensure project root is on sys.path when running via `uvicorn backend.api.main:app`
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from backend.api.routes import router
-from backend.data.discovery import DatasetDiscovery
+from backend.data.discovery import create_discovery
 from backend.inference.engine import InferenceEngine
 
 
@@ -33,21 +32,33 @@ async def lifespan(app: FastAPI):
     cfg = _load_config(config_path)
 
     app.state.config = cfg
-    app.state.discovery = DatasetDiscovery(cfg["dataset"]["root"])
-    app.state.engine = InferenceEngine(
-        checkpoint_dir=_PROJECT_ROOT / cfg["paths"]["checkpoints"],
-        device=cfg.get("model", {}).get("device", "auto"),
-    )
-    print("[API] Started. Dataset root:", cfg["dataset"]["root"])
+
+    datasets_cfg = cfg.get("datasets", {})
+    app.state.datasets_cfg = datasets_cfg
+
+    app.state.discoveries = {
+        ds_id: create_discovery(ds_cfg["type"], ds_cfg["root"])
+        for ds_id, ds_cfg in datasets_cfg.items()
+    }
+
+    base_ckpt = _PROJECT_ROOT / cfg["paths"]["checkpoints"]
+    app.state.engines = {
+        ds_id: InferenceEngine(
+            checkpoint_dir=base_ckpt / ds_id,
+            device=cfg.get("model", {}).get("device", "auto"),
+        )
+        for ds_id in datasets_cfg
+    }
+
+    print("[API] Started. Datasets:", list(datasets_cfg.keys()))
     yield
-    # Shutdown: nothing to clean up for MVP
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="MVTec Anomaly Detection Viewer",
+        title="MVTec Vision Lab",
         description="Browse MVTec datasets, train PaDiM models, and inspect XAI heatmaps.",
-        version="0.1.0",
+        version="2.0.0",
         lifespan=lifespan,
     )
 

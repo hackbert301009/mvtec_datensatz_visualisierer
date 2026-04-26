@@ -3,7 +3,7 @@ Training script for PaDiM anomaly detection models.
 
 Usage:
     python -m backend.training.train --categories bottle capsule
-    python -m backend.training.train --categories bottle --config config.yaml
+    python -m backend.training.train --dataset mvtec_ad2 --categories can fabric
     python -m backend.training.train --all
 """
 import argparse
@@ -17,12 +17,11 @@ import yaml
 from PIL import Image
 from torchvision import transforms
 
-# Allow running as `python -m backend.training.train` from project root
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from backend.data.discovery import DatasetDiscovery
+from backend.data.discovery import BaseDiscovery, create_discovery
 from backend.models.backbone import FeatureExtractor
 from backend.models.padim import PaDiM
 from backend.inference.pipeline_utils import (
@@ -62,28 +61,22 @@ def _extract_features_batched(
 
     for start in range(0, total, batch_size):
         batch_paths = image_paths[start : start + batch_size]
-        tensors = []
-        for p in batch_paths:
-            img = Image.open(p).convert("RGB")
-            tensors.append(transform(img))
+        tensors = [transform(Image.open(p).convert("RGB")) for p in batch_paths]
         batch = torch.stack(tensors)
-
         feats = extractor.extract(batch).detach().cpu()
         all_features.append(feats)
-
-        done = min(start + batch_size, total)
-        print(f"  [{done}/{total}] features extracted", end="\r")
+        print(f"  [{min(start + batch_size, total)}/{total}] features extracted", end="\r")
 
     print()
     return torch.cat(all_features, dim=0)
 
 
-def train_category(
+def train_category_with_discovery(
     category: str,
-    dataset_root: str | Path,
+    discovery: BaseDiscovery,
     checkpoint_dir: str | Path,
     backbone: str = "efficientnet_b0",
-    layers: list[int] = None,
+    layers: list[int] | None = None,
     image_size: int = 224,
     target_channels: int = 100,
     batch_size: int = 32,
@@ -101,7 +94,6 @@ def train_category(
     print(f"[train] Category: {category}")
     print(f"{'='*60}")
 
-    discovery = DatasetDiscovery(dataset_root)
     train_paths = discovery.get_train_paths(category)
     print(f"[train] {len(train_paths)} training images found")
 
@@ -116,34 +108,26 @@ def train_category(
     t0 = time.perf_counter()
     print(f"[train] Extracting features (batch_size={batch_size})...")
     all_features = _extract_features_batched(train_paths, extractor, transform, batch_size, resolved_device)
-    # all_features: [N, C, H, W]
 
     N, C, H, W = all_features.shape
     print(f"[train] Features: {N} images, {C} channels, {H}x{W} spatial")
 
     indices = choose_channel_indices(C, target_channels, seed=42)
     reduced = reduce_channels(all_features, indices)
-    print(f"[train] Using {len(indices)}/{C} channels (random subsampling, seed=42)")
+    print(f"[train] Using {len(indices)}/{C} channels")
 
     padim = PaDiM(epsilon=epsilon)
     padim.fit(reduced)
 
-    # Calibrate score statistics using test/good images as the "normal baseline".
-    # PaDiM training images have near-zero Mahalanobis distance by construction (they
-    # define the distribution), so only test/good images give a meaningful normalization
-    # reference. The p95 of test/good max-scores becomes the anomaly threshold.
     import numpy as np
-    calib_paths = discovery.list_images(category, "good")
-    calib_image_paths = [img["path"] for img in calib_paths]
+    calib_paths = discovery.get_good_test_images(category)
 
-    if calib_image_paths:
-        print(f"[train] Calibrating on {len(calib_image_paths)} test/good images...")
-        calib_features = _extract_features_batched(
-            calib_image_paths, extractor, transform, batch_size, resolved_device
-        )
+    if calib_paths:
+        print(f"[train] Calibrating on {len(calib_paths)} test/good images...")
+        calib_features = _extract_features_batched(calib_paths, extractor, transform, batch_size, resolved_device)
         calib_features = reduce_channels(calib_features, indices)
         with torch.no_grad():
-            calib_scores = padim.predict(calib_features)  # [N, H, W]
+            calib_scores = padim.predict(calib_features)
         calib_max = calib_scores.flatten(1).max(dim=1).values.cpu().numpy()
         score_stats = ScoreStats(
             mean=float(np.mean(calib_max)),
@@ -151,8 +135,7 @@ def train_category(
             p95=float(np.percentile(calib_max, 95)),
         )
     else:
-        # Fallback: use training scores (less accurate but better than nothing)
-        print("[train] No test/good images found, falling back to training scores for calibration")
+        print("[train] No test/good images found, calibrating on training scores")
         with torch.no_grad():
             raw_train_scores = padim.predict(reduced)
             max_scores = raw_train_scores.flatten(1).max(dim=1).values.cpu().numpy()
@@ -162,7 +145,7 @@ def train_category(
             p95=float(np.percentile(max_scores, 95)),
         )
 
-    print(f"[train] Score stats — mean: {score_stats.mean:.1f}, std: {score_stats.std:.1f}, p95: {score_stats.p95:.1f}")
+    print(f"[train] Score stats — mean: {score_stats.mean:.1f}, p95: {score_stats.p95:.1f}")
 
     fit_result = PaDiMFitResult(
         padim=padim,
@@ -187,21 +170,26 @@ def train_category(
 
     elapsed = time.perf_counter() - t0
     print(f"[train] Done in {elapsed:.1f}s → {out_path}")
-
     extractor.cleanup()
     return out_path
 
 
-def train_all(
-    categories: list[str],
+def train_category(
+    category: str,
     dataset_root: str | Path,
     checkpoint_dir: str | Path,
+    dataset_type: str = "mvtec_ad",
     **kwargs,
-) -> dict[str, Path]:
+) -> Path:
+    discovery = create_discovery(dataset_type, dataset_root)
+    return train_category_with_discovery(category, discovery, checkpoint_dir, **kwargs)
+
+
+def train_all(categories: list[str], **kwargs) -> dict[str, Path]:
     results = {}
     for cat in categories:
         try:
-            results[cat] = train_category(cat, dataset_root, checkpoint_dir, **kwargs)
+            results[cat] = train_category(cat, **kwargs)
         except Exception as e:
             print(f"[train] ERROR for '{cat}': {e}")
     return results
@@ -209,36 +197,49 @@ def train_all(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train PaDiM models for MVTec categories")
-    parser.add_argument("--categories", nargs="+", help="Categories to train (e.g. bottle capsule)")
-    parser.add_argument("--all", action="store_true", help="Train all available categories")
-    parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    parser.add_argument("--categories", nargs="+")
+    parser.add_argument("--all", action="store_true")
+    parser.add_argument("--dataset", default="mvtec_ad", help="Dataset ID (mvtec_ad or mvtec_ad2)")
+    parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()
 
     cfg = _load_config(args.config)
+    datasets_cfg = cfg.get("datasets", {})
 
-    dataset_root = cfg["dataset"]["root"]
-    checkpoint_dir = cfg["paths"]["checkpoints"]
+    if args.dataset not in datasets_cfg:
+        print(f"[train] Unknown dataset '{args.dataset}'. Available: {list(datasets_cfg.keys())}")
+        sys.exit(1)
+
+    ds_cfg = datasets_cfg[args.dataset]
+    dataset_root = ds_cfg["root"]
+    dataset_type = ds_cfg["type"]
+    checkpoint_dir = Path(cfg["paths"]["checkpoints"]) / args.dataset
     model_cfg = cfg.get("model", {})
     train_cfg = cfg.get("training", {})
 
+    discovery = create_discovery(dataset_type, dataset_root)
+
     if args.all:
-        from backend.data.discovery import DatasetDiscovery
-        categories = DatasetDiscovery(dataset_root).list_categories()
+        categories = discovery.list_categories()
     elif args.categories:
         categories = args.categories
     else:
         categories = train_cfg.get("default_categories", ["bottle", "capsule"])
         print(f"[train] No categories specified, using defaults: {categories}")
 
-    train_all(
-        categories=categories,
-        dataset_root=dataset_root,
-        checkpoint_dir=checkpoint_dir,
-        backbone=model_cfg.get("backbone", "efficientnet_b0"),
-        layers=model_cfg.get("layers", [1, 2, 3]),
-        image_size=model_cfg.get("image_size", 224),
-        target_channels=model_cfg.get("target_channels", 100),
-        batch_size=train_cfg.get("batch_size", 32),
-        epsilon=model_cfg.get("epsilon", 0.01),
-        device=model_cfg.get("device", "auto"),
-    )
+    for cat in categories:
+        try:
+            train_category_with_discovery(
+                category=cat,
+                discovery=discovery,
+                checkpoint_dir=checkpoint_dir,
+                backbone=model_cfg.get("backbone", "efficientnet_b0"),
+                layers=model_cfg.get("layers", [1, 2, 3]),
+                image_size=model_cfg.get("image_size", 224),
+                target_channels=model_cfg.get("target_channels", 100),
+                batch_size=train_cfg.get("batch_size", 32),
+                epsilon=model_cfg.get("epsilon", 0.01),
+                device=model_cfg.get("device", "auto"),
+            )
+        except Exception as e:
+            print(f"[train] ERROR for '{cat}': {e}")

@@ -1,53 +1,72 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MVTec Anomaly Viewer</title>
-  <link rel="stylesheet" href="styles.css" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MVTec Vision Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
 
+<!-- ── Header ──────────────────────────────────────────────────────────── -->
 <header>
-  <h1>MVTec Anomaly Viewer</h1>
-  <span class="subtitle">PaDiM · XAI Heatmaps · Open Source</span>
+  <div class="logo">
+    <div class="logo-gem">◈</div>
+    <div class="logo-text">
+      <span class="logo-title">MVTec Vision Lab</span>
+      <span class="logo-sub">PaDiM · Anomaly Detection · XAI Heatmaps</span>
+    </div>
+  </div>
+
+  <div class="ds-tabs" id="ds-tabs">
+    <!-- rendered by JS -->
+  </div>
+
+  <div class="header-stats" id="header-stats">
+    <div class="stat-chip"><span id="stat-cats">—</span> categories</div>
+    <div class="stat-chip"><span id="stat-models">—</span> models</div>
+  </div>
 </header>
 
+<!-- ── Main layout ──────────────────────────────────────────────────────── -->
 <div class="layout">
 
   <!-- LEFT: Categories -->
-  <aside class="panel-left">
-    <div class="panel-section">
-      <div class="panel-section-label">Dataset</div>
-      <div style="font-size:13px; color:var(--text-muted); padding: 2px 4px;">MVTec Anomaly Detection</div>
-    </div>
-
-    <div class="panel-section">
-      <div class="panel-section-label">Categories</div>
+  <aside class="panel panel-left">
+    <div class="panel-header">
+      <span class="panel-label">Categories</span>
+      <span class="panel-badge" id="cat-count"></span>
     </div>
     <div class="scrollable" id="category-list">
-      <div class="empty-state" style="padding:20px;">
-        <div class="spinner"></div>
-        <p>Loading…</p>
+      <div class="skeleton-wrap">
+        <div class="skel-item"></div>
+        <div class="skel-item"></div>
+        <div class="skel-item"></div>
+        <div class="skel-item"></div>
+        <div class="skel-item"></div>
+        <div class="skel-item"></div>
       </div>
     </div>
-
-    <div class="train-section">
-      <button class="btn" id="train-btn" onclick="trainSelected()" disabled>
+    <div class="train-footer">
+      <button class="btn-train" id="train-btn" onclick="trainSelected()" disabled>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         Train Selected
       </button>
       <div id="train-status"></div>
     </div>
   </aside>
 
-  <!-- MIDDLE: Defect types -->
-  <section class="panel-middle">
-    <div class="panel-section">
-      <div class="panel-section-label">Defect Types</div>
+  <!-- MIDDLE: Defect types / splits -->
+  <section class="panel panel-middle">
+    <div class="panel-header">
+      <span class="panel-label">Defect Types</span>
+      <span class="panel-badge" id="defect-count"></span>
     </div>
     <div class="scrollable" id="defect-list">
       <div class="empty-state">
-        <div class="icon">⬅</div>
+        <div class="empty-arrow">←</div>
         <p>Select a category</p>
       </div>
     </div>
@@ -55,45 +74,65 @@
 
   <!-- RIGHT: Image grid -->
   <main class="panel-right">
-    <div class="panel-right-header" id="breadcrumb">
-      <span>Select a category and defect type to browse images</span>
+    <div class="breadcrumb" id="breadcrumb">
+      <span class="bc-hint">Choose a category and defect type to browse images</span>
     </div>
-    <div id="image-area">
-      <div class="empty-state">
-        <div class="icon">🔬</div>
-        <p>Images will appear here</p>
-        <p style="font-size:11px;">Click a defect type in the middle panel</p>
+    <div id="image-area" class="image-area">
+      <div class="empty-state hero-empty">
+        <div class="hero-icon">🔬</div>
+        <p class="hero-title">Images will appear here</p>
+        <p class="hero-hint">Click a defect type in the middle panel</p>
       </div>
     </div>
   </main>
 
 </div>
 
-<!-- Modal -->
+<!-- ── Modal ────────────────────────────────────────────────────────────── -->
 <div class="modal-backdrop" id="modal-backdrop" onclick="closeModal(event)">
   <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-header">
+
+    <div class="modal-topbar">
       <div>
         <div class="modal-title" id="modal-title">Image</div>
-        <div class="modal-meta" id="modal-meta"></div>
+        <div class="modal-path" id="modal-path"></div>
       </div>
-      <button class="close-btn" onclick="closeModal()">×</button>
+      <button class="modal-close" onclick="closeModal()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
     </div>
+
+    <div class="modal-meta-row" id="modal-meta"></div>
+
     <div class="modal-tabs">
-      <button class="tab-btn active" id="tab-original" onclick="switchTab('original')">Original</button>
-      <button class="tab-btn" id="tab-heatmap" onclick="switchTab('heatmap')">Heatmap</button>
-      <button class="tab-btn" id="tab-overlay" onclick="switchTab('overlay')">Overlay</button>
+      <button class="tab active" id="tab-original" onclick="switchTab('original')">Original</button>
+      <button class="tab" id="tab-heatmap" onclick="switchTab('heatmap')">Heatmap</button>
+      <button class="tab" id="tab-overlay" onclick="switchTab('overlay')">Overlay</button>
     </div>
-    <div class="modal-body" id="modal-body">
-      <div class="modal-loading">
-        <div class="spinner"></div>
+
+    <div class="modal-img-wrap" id="modal-body">
+      <div class="scan-loader">
+        <div class="scan-bar"></div>
         <span>Running inference…</span>
       </div>
     </div>
+
+    <div class="modal-score-row" id="modal-score-row" style="display:none">
+      <div class="score-label-row">
+        <span class="score-label">Anomaly Score</span>
+        <span class="score-range">0 → 5.0 (threshold at <span id="score-thresh-lbl"></span>)</span>
+      </div>
+      <div class="score-track">
+        <div class="score-fill" id="score-fill"></div>
+        <div class="score-needle" id="score-needle"></div>
+      </div>
+      <div class="score-val" id="score-val"></div>
+    </div>
+
   </div>
 </div>
 
-<!-- Toast -->
+<!-- ── Toast ─────────────────────────────────────────────────────────────── -->
 <div id="toast"></div>
 
 <script src="app.js"></script>

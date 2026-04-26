@@ -1,5 +1,12 @@
-dataset:
-  root: /mnt/029A05BB9A05AC6B/data/mvtec_anomaly_detection
+datasets:
+  mvtec_ad:
+    name: "MVTec AD"
+    root: /mnt/029A05BB9A05AC6B/data/mvtec_anomaly_detection
+    type: mvtec_ad
+  mvtec_ad2:
+    name: "MVTec AD 2"
+    root: /mnt/029A05BB9A05AC6B/data/mvtec_ad_2
+    type: mvtec_ad2
 
 model:
   backbone: efficientnet_b0
@@ -17,8 +24,6 @@ training:
     - capsule
 
 inference:
-  # Score is normalized against the p95 of test/good images.
-  # Values > 1.0 mean the image is more anomalous than 95% of normal reference images.
   threshold: 1.0
   overlay_alpha: 0.5
 

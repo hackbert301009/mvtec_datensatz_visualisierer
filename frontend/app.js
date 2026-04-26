@@ -1,4 +1,9 @@
+'use strict';
+
+// ── State ─────────────────────────────────────────────────────────────────
+
 const state = {
+  dataset: 'mvtec_ad',
   category: null,
   defect: null,
   inferenceResult: null,
@@ -6,68 +11,138 @@ const state = {
   currentImagePath: null,
   trainedCategories: new Set(),
   trainingPollers: {},
+  datasets: [],
+  defectTypes: [],   // [{id, label, is_anomaly}]
 };
+
+// ── Category icons ────────────────────────────────────────────────────────
+
+const ICONS = {
+  bottle: '🍶', cable: '🔌', capsule: '💊', carpet: '🟫',
+  grid: '▦', hazelnut: '🌰', leather: '🟤', metal_nut: '🔩',
+  pill: '🩺', screw: '🔧', tile: '🔷', toothbrush: '🪥',
+  transistor: '⚡', wood: '🪵', zipper: '🪡',
+  can: '🥫', fabric: '🧵', fruit_jelly: '🍮', rice: '🍚',
+  sheet_metal: '⚙️', vial: '🧪', wallplugs: '🔌', walnuts: '🌰',
+};
+
+function icon(name) {
+  return ICONS[name] || '📦';
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────
 
 async function init() {
   try {
-    const [categories, trainedModels] = await Promise.all([
-      apiFetch('/api/categories'),
-      apiFetch('/api/models'),
-    ]);
-    state.trainedCategories = new Set(trainedModels);
-    renderCategories(categories);
+    const datasets = await apiFetch('/api/datasets');
+    state.datasets = datasets;
+    renderDatasetTabs(datasets);
+
+    // Pick first available dataset
+    const first = datasets.find(d => d.available) || datasets[0];
+    if (first) await switchDataset(first.id, false);
   } catch (e) {
     document.getElementById('category-list').innerHTML =
       `<div class="empty-state"><p style="color:var(--anomaly)">API unreachable: ${e.message}</p></div>`;
   }
 }
 
-// ── API helpers ───────────────────────────────────────────────────────────
+// ── Dataset tabs ──────────────────────────────────────────────────────────
 
-async function apiFetch(url, options) {
-  const res = await fetch(url, options);
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(body.detail || res.statusText);
+function renderDatasetTabs(datasets) {
+  const el = document.getElementById('ds-tabs');
+  const DS_ICONS = { mvtec_ad: '🔬', mvtec_ad2: '⚗️' };
+  el.innerHTML = datasets.map(ds => `
+    <button
+      class="ds-tab ${ds.id === state.dataset ? 'active' : ''} ${!ds.available ? 'unavailable' : ''}"
+      id="dstab-${ds.id}"
+      onclick="switchDataset('${ds.id}')"
+      ${!ds.available ? 'title="Dataset not yet available (still extracting?)"' : ''}
+    >
+      <span class="ds-tab-icon">${DS_ICONS[ds.id] || '📁'}</span>
+      <span class="ds-tab-name">${ds.name}</span>
+      <span class="ds-tab-count">${ds.category_count} cats</span>
+    </button>
+  `).join('');
+}
+
+async function switchDataset(dsId, animate = true) {
+  if (dsId === state.dataset && state.category !== null) return;
+
+  state.dataset = dsId;
+  state.category = null;
+  state.defect = null;
+  state.trainedCategories = new Set();
+
+  // Update active tab
+  document.querySelectorAll('.ds-tab').forEach(el => {
+    el.classList.toggle('active', el.id === `dstab-${dsId}`);
+  });
+
+  clearDefectList();
+  clearImageArea();
+  updateBreadcrumb();
+
+  const catList = document.getElementById('category-list');
+  catList.innerHTML = `<div class="skeleton-wrap">
+    ${Array(7).fill('<div class="skel-item"></div>').join('')}
+  </div>`;
+
+  try {
+    const [categories, trainedModels] = await Promise.all([
+      apiFetch(`/api/categories?dataset=${dsId}`),
+      apiFetch(`/api/models?dataset=${dsId}`),
+    ]);
+    state.trainedCategories = new Set(trainedModels);
+    renderCategories(categories);
+    updateHeaderStats(categories.length, trainedModels.length);
+  } catch (e) {
+    catList.innerHTML = `<div class="empty-state"><p style="color:var(--anomaly)">${e.message}</p></div>`;
   }
-  return res.json();
 }
 
 // ── Render categories ─────────────────────────────────────────────────────
 
 function renderCategories(categories) {
   const el = document.getElementById('category-list');
+  document.getElementById('cat-count').textContent = categories.length;
+
   if (!categories.length) {
     el.innerHTML = '<div class="empty-state"><p>No categories found</p></div>';
     return;
   }
+
   el.innerHTML = categories.map(cat => {
     const trained = state.trainedCategories.has(cat);
-    return `<div class="list-item" id="cat-${cat}" onclick="selectCategory('${cat}')">
-      <span>${cat}</span>
-      ${trained ? '<span class="badge" style="color:var(--good)">trained</span>' : '<span class="badge">untrained</span>'}
+    const training = state.trainingPollers[cat] !== undefined;
+    const dotClass = training ? 'training' : trained ? 'yes' : '';
+    return `<div class="cat-item" id="cat-${cat}" onclick="selectCategory('${cat}')">
+      <span class="cat-icon">${icon(cat)}</span>
+      <span class="cat-name">${cat}</span>
+      <span class="trained-dot ${dotClass}" title="${training ? 'Training…' : trained ? 'Model ready' : 'Not trained'}"></span>
     </div>`;
   }).join('');
 }
 
 async function selectCategory(cat) {
+  if (state.category === cat) return;
   state.category = cat;
   state.defect = null;
 
-  document.querySelectorAll('#category-list .list-item').forEach(el => el.classList.remove('active'));
-  const el = document.getElementById(`cat-${cat}`);
-  if (el) el.classList.add('active');
+  document.querySelectorAll('.cat-item').forEach(el => el.classList.remove('active'));
+  document.getElementById(`cat-${cat}`)?.classList.add('active');
 
   updateTrainButton();
-  clearImageArea('Select a defect type to browse images');
+  clearImageArea();
+  updateBreadcrumb();
 
   const defectList = document.getElementById('defect-list');
-  defectList.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  defectList.innerHTML = `<div class="skeleton-wrap">${Array(4).fill('<div class="skel-item"></div>').join('')}</div>`;
+  document.getElementById('defect-count').textContent = '';
 
   try {
-    const defects = await apiFetch(`/api/defect-types?category=${encodeURIComponent(cat)}`);
+    const defects = await apiFetch(`/api/defect-types?category=${enc(cat)}&dataset=${state.dataset}`);
+    state.defectTypes = defects;
     renderDefects(defects);
   } catch (e) {
     defectList.innerHTML = `<div class="empty-state"><p style="color:var(--anomaly)">${e.message}</p></div>`;
@@ -78,43 +153,44 @@ async function selectCategory(cat) {
 
 function renderDefects(defects) {
   const el = document.getElementById('defect-list');
+  document.getElementById('defect-count').textContent = defects.length;
+
   if (!defects.length) {
     el.innerHTML = '<div class="empty-state"><p>No defect types found</p></div>';
     return;
   }
+
   el.innerHTML = defects.map(d => {
-    const isGood = d === 'good';
-    return `<div class="list-item" id="def-${d}" onclick="selectDefect('${d}')">
-      <div style="display:flex;align-items:center;gap:6px;">
-        <span class="dot ${isGood ? 'good' : 'anomaly'}"></span>
-        <span>${d}</span>
-      </div>
+    const dotClass = d.is_anomaly === true ? 'anomaly' : d.is_anomaly === false ? 'good' : 'unknown';
+    return `<div class="defect-item" id="def-${d.id}" onclick="selectDefect('${d.id}')">
+      <span class="defect-dot ${dotClass}"></span>
+      <span class="defect-name">${d.label}</span>
     </div>`;
   }).join('');
 }
 
-async function selectDefect(defect) {
-  state.defect = defect;
+async function selectDefect(defectId) {
+  state.defect = defectId;
 
-  document.querySelectorAll('#defect-list .list-item').forEach(el => el.classList.remove('active'));
-  const el = document.getElementById(`def-${defect}`);
-  if (el) el.classList.add('active');
+  document.querySelectorAll('.defect-item').forEach(el => el.classList.remove('active'));
+  document.getElementById(`def-${defectId}`)?.classList.add('active');
 
   updateBreadcrumb();
-  const imageArea = document.getElementById('image-area');
-  imageArea.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+  document.getElementById('image-area').innerHTML =
+    `<div class="empty-state"><div class="scan-loader"><div class="scan-bar"></div></div></div>`;
 
   try {
     const images = await apiFetch(
-      `/api/images?category=${encodeURIComponent(state.category)}&defect=${encodeURIComponent(defect)}`
+      `/api/images?category=${enc(state.category)}&defect=${enc(defectId)}&dataset=${state.dataset}`
     );
     renderImageGrid(images);
   } catch (e) {
-    imageArea.innerHTML = `<div class="empty-state"><p style="color:var(--anomaly)">${e.message}</p></div>`;
+    document.getElementById('image-area').innerHTML =
+      `<div class="empty-state"><p style="color:var(--anomaly)">${e.message}</p></div>`;
   }
 }
 
-// ── Render image grid ─────────────────────────────────────────────────────
+// ── Image grid ────────────────────────────────────────────────────────────
 
 function renderImageGrid(images) {
   const area = document.getElementById('image-area');
@@ -122,11 +198,13 @@ function renderImageGrid(images) {
     area.innerHTML = '<div class="empty-state"><p>No images found</p></div>';
     return;
   }
-  area.innerHTML = `<div class="image-grid">${images.map(img =>
-    `<div class="image-card" onclick="openImage('${escapeAttr(img.path)}', '${escapeAttr(img.filename)}')">
-      <img src="/api/image?path=${encodeURIComponent(img.path)}" alt="${escapeAttr(img.filename)}" loading="lazy" />
-      ${img.is_anomaly ? '<div class="anomaly-dot"></div>' : ''}
-      <div class="card-label">${img.filename}</div>
+  area.innerHTML = `<div class="image-grid">${images.map(img => `
+    <div class="image-card" onclick="openImage('${escAttr(img.path)}', '${escAttr(img.filename)}')">
+      <img src="/api/image?path=${encodeURIComponent(img.path)}" alt="${escAttr(img.filename)}" loading="lazy"/>
+      ${img.is_anomaly ? '<div class="card-anomaly-badge">⚠</div>' : ''}
+      <div class="card-overlay">
+        <span class="card-filename">${img.filename}</span>
+      </div>
     </div>`
   ).join('')}</div>`;
 }
@@ -134,29 +212,36 @@ function renderImageGrid(images) {
 // ── Modal / Inference ─────────────────────────────────────────────────────
 
 async function openImage(imagePath, filename) {
-  if (!state.category) return;
-
   state.currentImagePath = imagePath;
   state.inferenceResult = null;
   state.activeTab = 'original';
 
+  // Set title
+  const defect = state.defectTypes.find(d => d.id === state.defect);
+  const defectLabel = defect ? defect.label : state.defect;
   document.getElementById('modal-title').textContent =
-    `${state.category} / ${state.defect} / ${filename}`;
+    `${state.category}  ·  ${defectLabel}`;
+  document.getElementById('modal-path').textContent = filename;
   document.getElementById('modal-meta').innerHTML = '';
-  setModalBody('<div class="modal-loading"><div class="spinner"></div><span>Running inference…</span></div>');
+  document.getElementById('modal-score-row').style.display = 'none';
 
-  ['original', 'heatmap', 'overlay'].forEach(t => {
-    document.getElementById(`tab-${t}`).classList.toggle('active', t === 'original');
-  });
+  // Reset tabs
+  ['original','heatmap','overlay'].forEach(t =>
+    document.getElementById(`tab-${t}`).classList.toggle('active', t === 'original')
+  );
 
+  setModalBody(`<div class="scan-loader"><div class="scan-bar"></div><span>Running inference…</span></div>`);
   document.getElementById('modal-backdrop').classList.add('open');
 
   if (!state.trainedCategories.has(state.category)) {
-    setModalBody(`<div class="modal-loading">
-      <span style="color:var(--text-muted)">Model not trained for <b>${state.category}</b>.</span>
-      <button class="btn" style="margin-top:12px;width:auto;padding:8px 20px;" onclick="trainSelected()">Train Now</button>
+    setModalBody(`<div class="scan-loader">
+      <span style="color:var(--text-muted);text-align:center">
+        Model not trained for <b>${state.category}</b>.<br>
+        <button class="btn-train" style="margin-top:12px;width:auto;padding:8px 18px" onclick="trainSelected()">
+          Train now
+        </button>
+      </span>
     </div>`);
-    document.getElementById('modal-meta').innerHTML = '';
     return;
   }
 
@@ -164,27 +249,54 @@ async function openImage(imagePath, filename) {
     const result = await apiFetch('/api/inference', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category: state.category, image_path: imagePath }),
+      body: JSON.stringify({ dataset: state.dataset, category: state.category, image_path: imagePath }),
     });
     state.inferenceResult = result;
     renderModalResult(result, imagePath);
   } catch (e) {
-    setModalBody(`<div class="modal-loading"><span style="color:var(--anomaly)">Error: ${e.message}</span></div>`);
+    setModalBody(`<div class="scan-loader"><span style="color:var(--anomaly)">Error: ${e.message}</span></div>`);
   }
 }
 
 function renderModalResult(result, imagePath) {
-  const meta = document.getElementById('modal-meta');
-  const badge = result.is_anomaly
-    ? `<span class="score-badge anomaly">Anomaly</span>`
-    : `<span class="score-badge good">Normal</span>`;
-  meta.innerHTML = `${badge} <span>Score: <b>${result.score.toFixed(3)}</b></span> <span style="color:var(--text-muted);font-size:11px;">(p95-normalized, threshold ${result.threshold})</span> <span style="color:var(--text-muted);">${result.inference_time_ms.toFixed(0)} ms</span>`;
+  const isAnom = result.is_anomaly;
+  const badge = isAnom
+    ? `<span class="score-badge anomaly">⚠ Anomaly</span>`
+    : `<span class="score-badge good">✓ Normal</span>`;
+
+  document.getElementById('modal-meta').innerHTML =
+    `${badge}
+     <span class="meta-score">Score: <b>${result.score.toFixed(3)}</b></span>
+     <span class="meta-time">${result.inference_time_ms.toFixed(0)} ms</span>`;
+
   showTab('original', imagePath);
+
+  // Animate score bar
+  const maxScore = 5.0;
+  const pct = Math.min(result.score / maxScore * 100, 100).toFixed(1);
+  const thresholdPct = (result.threshold / maxScore * 100).toFixed(1);
+  const color = isAnom ? 'var(--anomaly)' : 'var(--good)';
+
+  const scoreRow = document.getElementById('modal-score-row');
+  scoreRow.style.display = '';
+  document.getElementById('score-thresh-lbl').textContent = result.threshold;
+  document.getElementById('score-needle').style.left = `${thresholdPct}%`;
+
+  const fill = document.getElementById('score-fill');
+  fill.style.background = color;
+  fill.style.width = '0%';
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => { fill.style.width = `${pct}%`; });
+  });
+
+  document.getElementById('score-val').innerHTML =
+    `<span style="color:${color}">${result.score.toFixed(4)}</span>
+     <span style="color:var(--text-muted);font-weight:400"> / ${maxScore} (threshold: ${result.threshold})</span>`;
 }
 
 function switchTab(tab) {
   state.activeTab = tab;
-  ['original', 'heatmap', 'overlay'].forEach(t =>
+  ['original','heatmap','overlay'].forEach(t =>
     document.getElementById(`tab-${t}`).classList.toggle('active', t === tab)
   );
   if (!state.inferenceResult) return;
@@ -192,13 +304,13 @@ function switchTab(tab) {
 }
 
 function showTab(tab, imagePath) {
-  const result = state.inferenceResult;
+  const r = state.inferenceResult;
   if (tab === 'original') {
-    setModalBody(`<img src="/api/image?path=${encodeURIComponent(imagePath)}" alt="original" />`);
-  } else if (tab === 'heatmap' && result) {
-    setModalBody(`<img src="data:image/png;base64,${result.heatmap_b64}" alt="heatmap" />`);
-  } else if (tab === 'overlay' && result) {
-    setModalBody(`<img src="data:image/png;base64,${result.overlay_b64}" alt="overlay" />`);
+    setModalBody(`<img src="/api/image?path=${encodeURIComponent(imagePath)}" alt="original"/>`);
+  } else if (tab === 'heatmap' && r) {
+    setModalBody(`<img src="data:image/png;base64,${r.heatmap_b64}" alt="heatmap"/>`);
+  } else if (tab === 'overlay' && r) {
+    setModalBody(`<img src="data:image/png;base64,${r.overlay_b64}" alt="overlay"/>`);
   }
 }
 
@@ -211,6 +323,7 @@ function closeModal(event) {
   document.getElementById('modal-backdrop').classList.remove('open');
   state.inferenceResult = null;
   state.currentImagePath = null;
+  document.getElementById('modal-score-row').style.display = 'none';
 }
 
 // ── Training ──────────────────────────────────────────────────────────────
@@ -225,10 +338,13 @@ function updateTrainButton() {
   }
   const isTraining = state.trainingPollers[state.category] !== undefined;
   const isTrained = state.trainedCategories.has(state.category);
-
   btn.disabled = isTraining;
-  btn.textContent = isTraining ? 'Training…' : isTrained ? 'Retrain' : 'Train Selected';
-  status.textContent = isTrained && !isTraining ? '✓ Model ready' : '';
+  btn.innerHTML = isTraining
+    ? `<span class="skel-item" style="height:14px;width:80px;display:inline-block;border-radius:4px"></span>`
+    : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>${isTrained ? 'Retrain' : 'Train Selected'}`;
+  status.innerHTML = isTrained && !isTraining
+    ? `<span style="color:var(--good)">✓ Model ready</span>`
+    : isTraining ? 'Training in progress…' : '';
 }
 
 async function trainSelected() {
@@ -239,33 +355,34 @@ async function trainSelected() {
   document.getElementById('train-status').textContent = 'Starting…';
 
   try {
-    await apiFetch(`/api/train?categories=${encodeURIComponent(cat)}`);
+    await apiFetch(`/api/train?categories=${enc(cat)}&dataset=${state.dataset}`);
     startTrainingPoller(cat);
   } catch (e) {
-    showToast(`Training error: ${e.message}`, true);
+    showToast(`Training error: ${e.message}`, 'error');
     updateTrainButton();
   }
 }
 
 function startTrainingPoller(cat) {
   if (state.trainingPollers[cat]) return;
-
-  document.getElementById('train-status').textContent = 'Training in progress…';
+  document.getElementById('train-status').textContent = 'Training…';
+  refreshCategoryDot(cat, 'training');
 
   const poll = setInterval(async () => {
     try {
-      const res = await apiFetch(`/api/train/status?category=${encodeURIComponent(cat)}`);
+      const res = await apiFetch(`/api/train/status?category=${enc(cat)}&dataset=${state.dataset}`);
       if (res.status === 'done') {
         clearInterval(poll);
         delete state.trainingPollers[cat];
         state.trainedCategories.add(cat);
         updateTrainButton();
-        refreshCategoryBadge(cat, true);
-        showToast(`✓ Training complete for "${cat}"`);
-      } else if (res.status && res.status.startsWith('error:')) {
+        refreshCategoryDot(cat, 'yes');
+        showToast(`Training complete for "${cat}"`, 'success');
+      } else if (res.status?.startsWith('error:')) {
         clearInterval(poll);
         delete state.trainingPollers[cat];
-        showToast(`Training failed for "${cat}": ${res.status.slice(6)}`, true);
+        refreshCategoryDot(cat, '');
+        showToast(`Training failed: ${res.status.slice(6)}`, 'error');
         updateTrainButton();
       }
     } catch (_) {}
@@ -274,48 +391,84 @@ function startTrainingPoller(cat) {
   state.trainingPollers[cat] = poll;
 }
 
-function refreshCategoryBadge(cat, trained) {
+function refreshCategoryDot(cat, cls) {
   const el = document.getElementById(`cat-${cat}`);
   if (!el) return;
-  const badge = el.querySelector('.badge');
-  if (badge) {
-    badge.style.color = trained ? 'var(--good)' : '';
-    badge.textContent = trained ? 'trained' : 'untrained';
-  }
+  const dot = el.querySelector('.trained-dot');
+  if (dot) dot.className = `trained-dot ${cls}`;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function updateBreadcrumb() {
   const el = document.getElementById('breadcrumb');
-  el.innerHTML = state.category && state.defect
-    ? `<span class="crumb">${state.category}</span> / <span class="crumb">${state.defect}</span>`
-    : '<span>Select a defect type</span>';
+  if (!state.category) {
+    el.innerHTML = '<span class="bc-hint">Choose a category and defect type to browse images</span>';
+    return;
+  }
+  const defect = state.defectTypes.find(d => d.id === state.defect);
+  const defectLabel = defect ? defect.label : state.defect;
+
+  el.innerHTML = state.defect
+    ? `<span class="bc-crumb">${icon(state.category)} ${state.category}</span>
+       <span class="bc-sep">/</span>
+       <span class="bc-crumb">${defectLabel}</span>`
+    : `<span class="bc-crumb">${icon(state.category)} ${state.category}</span>`;
 }
 
-function clearImageArea(msg = '') {
+function clearDefectList() {
+  document.getElementById('defect-list').innerHTML =
+    `<div class="empty-state"><div class="empty-arrow">←</div><p>Select a category</p></div>`;
+  document.getElementById('defect-count').textContent = '';
+  state.defectTypes = [];
+}
+
+function clearImageArea() {
   document.getElementById('image-area').innerHTML =
-    `<div class="empty-state"><p>${msg}</p></div>`;
-  updateBreadcrumb();
+    `<div class="empty-state hero-empty">
+       <div class="hero-icon">🔬</div>
+       <p class="hero-title">Images will appear here</p>
+       <p class="hero-hint">Click a defect type in the middle panel</p>
+     </div>`;
 }
 
-function escapeAttr(str) {
-  return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+function updateHeaderStats(catCount, modelCount) {
+  document.getElementById('stat-cats').textContent = catCount;
+  document.getElementById('stat-models').textContent = modelCount;
+}
+
+function enc(s) { return encodeURIComponent(s); }
+
+function escAttr(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/'/g, '&#39;')
+    .replace(/"/g, '&quot;');
+}
+
+async function apiFetch(url, options) {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(body.detail || res.statusText);
+  }
+  return res.json();
 }
 
 let _toastTimer;
-function showToast(msg, isError = false) {
+function showToast(msg, type = '') {
   const el = document.getElementById('toast');
   el.textContent = msg;
-  el.classList.toggle('error', isError);
-  el.classList.add('show');
+  el.className = type ? `show ${type}` : 'show';
   clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+  _toastTimer = setTimeout(() => { el.classList.remove('show'); }, 3800);
 }
 
 // Keyboard: Escape closes modal
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModal({target: document.getElementById('modal-backdrop')});
+  if (e.key === 'Escape') {
+    closeModal({ target: document.getElementById('modal-backdrop') });
+  }
 });
 
 init();

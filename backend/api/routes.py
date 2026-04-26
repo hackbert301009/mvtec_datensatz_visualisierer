@@ -7,20 +7,33 @@ from pydantic import BaseModel
 
 router = APIRouter()
 
-# Background training state: category → "training" | "done" | "error:<msg>"
 _train_status: dict[str, str] = {}
 _train_lock = threading.Lock()
 
 
-# ── Request / Response models ────────────────────────────────────────────────
+# ── Models ───────────────────────────────────────────────────────────────────
+
+class DefectType(BaseModel):
+    id: str
+    label: str
+    is_anomaly: bool | None
+
+
+class DatasetInfo(BaseModel):
+    id: str
+    name: str
+    available: bool
+    category_count: int
+
 
 class InferenceRequest(BaseModel):
+    dataset: str = "mvtec_ad"
     category: str
     image_path: str
 
 
 class InferenceResponse(BaseModel):
-    score: float          # normalized against training p95; >1.0 = more anomalous than 95% of training
+    score: float
     is_anomaly: bool
     threshold: float
     heatmap_b64: str
@@ -30,47 +43,85 @@ class InferenceResponse(BaseModel):
 
 class TrainStatusResponse(BaseModel):
     category: str
-    status: str         # "training" | "done" | "error:<msg>" | "not_started"
+    status: str
     trained: bool
 
 
-# ── Dataset endpoints ────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _get_discovery(request: Request, dataset: str):
+    disc = request.app.state.discoveries.get(dataset)
+    if disc is None:
+        raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' not found")
+    return disc
+
+
+def _get_engine(request: Request, dataset: str):
+    engine = request.app.state.engines.get(dataset)
+    if engine is None:
+        raise HTTPException(status_code=404, detail=f"Dataset '{dataset}' has no inference engine")
+    return engine
+
+
+def _train_key(dataset: str, category: str) -> str:
+    return f"{dataset}::{category}"
+
+
+# ── Dataset endpoints ─────────────────────────────────────────────────────────
 
 @router.get("/datasets")
-async def list_datasets() -> list[str]:
-    return ["mvtec_anomaly_detection"]
+async def list_datasets(request: Request) -> list[DatasetInfo]:
+    cfg = request.app.state.datasets_cfg
+    discoveries = request.app.state.discoveries
+    result = []
+    for ds_id, ds_cfg in cfg.items():
+        disc = discoveries.get(ds_id)
+        cats = disc.list_categories() if disc else []
+        result.append(DatasetInfo(
+            id=ds_id,
+            name=ds_cfg["name"],
+            available=disc is not None and disc.root.exists(),
+            category_count=len(cats),
+        ))
+    return result
 
 
 @router.get("/categories")
-async def list_categories(request: Request) -> list[str]:
-    return request.app.state.discovery.list_categories()
+async def list_categories(request: Request, dataset: str = "mvtec_ad") -> list[str]:
+    return _get_discovery(request, dataset).list_categories()
 
 
 @router.get("/defect-types")
-async def list_defect_types(category: str, request: Request) -> list[str]:
-    types = request.app.state.discovery.list_defect_types(category)
+async def list_defect_types(
+    category: str, request: Request, dataset: str = "mvtec_ad"
+) -> list[DefectType]:
+    types = _get_discovery(request, dataset).list_defect_types(category)
     if not types:
         raise HTTPException(status_code=404, detail=f"Category '{category}' not found")
-    return types
+    return [DefectType(**t) for t in types]
 
 
 @router.get("/images")
-async def list_images(category: str, defect: str, request: Request) -> list[dict]:
-    return request.app.state.discovery.list_images(category, defect)
+async def list_images(
+    category: str, defect: str, request: Request, dataset: str = "mvtec_ad"
+) -> list[dict]:
+    return _get_discovery(request, dataset).list_images(category, defect)
 
 
 # ── Image serving ─────────────────────────────────────────────────────────────
 
 @router.get("/image")
 async def serve_image(path: str, request: Request) -> FileResponse:
-    dataset_root = Path(request.app.state.config["dataset"]["root"])
     image_path = Path(path)
 
-    # Security: only serve files inside the configured dataset root
-    try:
-        image_path.resolve().relative_to(dataset_root.resolve())
-    except ValueError:
-        raise HTTPException(status_code=403, detail="Path outside dataset root")
+    # Security: only serve files inside a configured dataset root
+    allowed_roots = [
+        Path(ds_cfg["root"]).resolve()
+        for ds_cfg in request.app.state.datasets_cfg.values()
+    ]
+    resolved = image_path.resolve()
+    if not any(resolved.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="Path outside dataset roots")
 
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
@@ -82,16 +133,15 @@ async def serve_image(path: str, request: Request) -> FileResponse:
 
 @router.post("/inference", response_model=InferenceResponse)
 async def run_inference(body: InferenceRequest, request: Request) -> InferenceResponse:
-    engine = request.app.state.engine
+    engine = _get_engine(request, body.dataset)
     cfg = request.app.state.config
-    threshold = cfg.get("inference", {}).get("threshold", 0.5)
+    threshold = cfg.get("inference", {}).get("threshold", 1.0)
     alpha = cfg.get("inference", {}).get("overlay_alpha", 0.5)
 
     if not engine.is_trained(body.category):
         raise HTTPException(
             status_code=400,
-            detail=f"Model for '{body.category}' not trained yet. "
-                   f"Call GET /api/train?categories={body.category} first.",
+            detail=f"Model for '{body.category}' not trained yet.",
         )
 
     try:
@@ -118,21 +168,23 @@ async def run_inference(body: InferenceRequest, request: Request) -> InferenceRe
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
-def _run_training_bg(category: str, cfg: dict) -> None:
-    """Background task — trains a single category and updates _train_status."""
+def _run_training_bg(dataset: str, category: str, cfg: dict, dataset_type: str, dataset_root: str, checkpoint_dir: str) -> None:
     import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from pathlib import Path as P
+    sys.path.insert(0, str(P(__file__).resolve().parents[2]))
 
-    from backend.training.train import train_category
+    from backend.data.discovery import create_discovery
+    from backend.training.train import train_category_with_discovery
 
+    key = _train_key(dataset, category)
     with _train_lock:
-        _train_status[category] = "training"
+        _train_status[key] = "training"
     try:
-        train_category(
+        discovery = create_discovery(dataset_type, dataset_root)
+        train_category_with_discovery(
             category=category,
-            dataset_root=cfg["dataset"]["root"],
-            checkpoint_dir=cfg["paths"]["checkpoints"],
+            discovery=discovery,
+            checkpoint_dir=checkpoint_dir,
             backbone=cfg.get("model", {}).get("backbone", "efficientnet_b0"),
             layers=cfg.get("model", {}).get("layers", [1, 2, 3]),
             image_size=cfg.get("model", {}).get("image_size", 224),
@@ -142,10 +194,10 @@ def _run_training_bg(category: str, cfg: dict) -> None:
             device=cfg.get("model", {}).get("device", "auto"),
         )
         with _train_lock:
-            _train_status[category] = "done"
+            _train_status[key] = "done"
     except Exception as e:
         with _train_lock:
-            _train_status[category] = f"error:{e}"
+            _train_status[key] = f"error:{e}"
 
 
 @router.get("/train")
@@ -153,36 +205,56 @@ async def trigger_training(
     categories: str,
     background_tasks: BackgroundTasks,
     request: Request,
+    dataset: str = "mvtec_ad",
 ) -> list[TrainStatusResponse]:
-    engine = request.app.state.engine
+    engine = _get_engine(request, dataset)
     cfg = request.app.state.config
-    cat_list = [c.strip() for c in categories.split(",") if c.strip()]
+    ds_cfg = request.app.state.datasets_cfg.get(dataset, {})
 
+    import os
+    project_root = str(request.app.state.config.get("_project_root", ""))
+    base_ckpt_dir = os.path.join(
+        str(Path(__file__).resolve().parents[2]),
+        cfg["paths"]["checkpoints"],
+        dataset,
+    )
+
+    cat_list = [c.strip() for c in categories.split(",") if c.strip()]
     responses = []
     for cat in cat_list:
+        key = _train_key(dataset, cat)
         with _train_lock:
-            status = _train_status.get(cat)
+            status = _train_status.get(key)
 
         if status == "training":
             responses.append(TrainStatusResponse(category=cat, status="training", trained=False))
         elif engine.is_trained(cat) and status != "training":
             with _train_lock:
-                _train_status[cat] = "done"
+                _train_status[key] = "done"
             responses.append(TrainStatusResponse(category=cat, status="done", trained=True))
         else:
-            background_tasks.add_task(_run_training_bg, cat, cfg)
+            background_tasks.add_task(
+                _run_training_bg,
+                dataset, cat, cfg,
+                ds_cfg.get("type", "mvtec_ad"),
+                ds_cfg.get("root", ""),
+                base_ckpt_dir,
+            )
             with _train_lock:
-                _train_status[cat] = "training"
+                _train_status[key] = "training"
             responses.append(TrainStatusResponse(category=cat, status="training", trained=False))
 
     return responses
 
 
 @router.get("/train/status")
-async def training_status(category: str, request: Request) -> TrainStatusResponse:
-    engine = request.app.state.engine
+async def training_status(
+    category: str, request: Request, dataset: str = "mvtec_ad"
+) -> TrainStatusResponse:
+    engine = _get_engine(request, dataset)
+    key = _train_key(dataset, category)
     with _train_lock:
-        status = _train_status.get(category, "not_started")
+        status = _train_status.get(key, "not_started")
 
     trained = engine.is_trained(category)
     if trained and status not in ("training",):
@@ -192,5 +264,7 @@ async def training_status(category: str, request: Request) -> TrainStatusRespons
 
 
 @router.get("/models")
-async def list_trained_models(request: Request) -> list[str]:
-    return request.app.state.engine.trained_categories()
+async def list_trained_models(
+    request: Request, dataset: str = "mvtec_ad"
+) -> list[str]:
+    return _get_engine(request, dataset).trained_categories()
