@@ -147,7 +147,7 @@ Training takes **3–8 minutes per category** on CPU.
 | GET | `/api/models?dataset=mvtec_ad` | List trained categories |
 
 ---
-
+test
 ## How It Works
 
 **PaDiM** (Patch Distribution Modeling) is a training-free anomaly detection method:
