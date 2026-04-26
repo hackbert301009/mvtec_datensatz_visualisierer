@@ -7,6 +7,10 @@ datasets:
     name: "MVTec AD 2"
     root: /mnt/029A05BB9A05AC6B/data/mvtec_ad_2
     type: mvtec_ad2
+  mvtec_ad3:
+    name: "MVTec 3D AD"
+    root: /mnt/029A05BB9A05AC6B/data
+    type: mvtec_ad3
 
 model:
   backbone: efficientnet_b0

@@ -18,12 +18,24 @@ const state = {
 // ── Category icons ────────────────────────────────────────────────────────
 
 const ICONS = {
+  // AD1
   bottle: '🍶', cable: '🔌', capsule: '💊', carpet: '🟫',
   grid: '▦', hazelnut: '🌰', leather: '🟤', metal_nut: '🔩',
   pill: '🩺', screw: '🔧', tile: '🔷', toothbrush: '🪥',
   transistor: '⚡', wood: '🪵', zipper: '🪡',
+  // AD2
   can: '🥫', fabric: '🧵', fruit_jelly: '🍮', rice: '🍚',
   sheet_metal: '⚙️', vial: '🧪', wallplugs: '🔌', walnuts: '🌰',
+  // AD3
+  bagel: '🥯', cable_gland: '🔩', carrot: '🥕', cookie: '🍪',
+  dowel: '🪛', foam: '🟦', peach: '🍑', potato: '🥔',
+  rope: '🪢', tire: '🔘',
+};
+
+const DS_META = {
+  mvtec_ad:  { icon: '🔬', badge: null,   label: 'MVTec AD'    },
+  mvtec_ad2: { icon: '⚗️',  badge: null,   label: 'MVTec AD 2'  },
+  mvtec_ad3: { icon: '📐', badge: '3D',   label: 'MVTec 3D AD' },
 };
 
 function icon(name) {
@@ -51,19 +63,21 @@ async function init() {
 
 function renderDatasetTabs(datasets) {
   const el = document.getElementById('ds-tabs');
-  const DS_ICONS = { mvtec_ad: '🔬', mvtec_ad2: '⚗️' };
-  el.innerHTML = datasets.map(ds => `
+  el.innerHTML = datasets.map(ds => {
+    const meta = DS_META[ds.id] || { icon: '📁', badge: null };
+    const badge3d = meta.badge ? `<span class="ds-tab-3d">${meta.badge}</span>` : '';
+    return `
     <button
       class="ds-tab ${ds.id === state.dataset ? 'active' : ''} ${!ds.available ? 'unavailable' : ''}"
       id="dstab-${ds.id}"
       onclick="switchDataset('${ds.id}')"
-      ${!ds.available ? 'title="Dataset not yet available (still extracting?)"' : ''}
+      ${!ds.available ? 'title="Dataset wird noch extrahiert…"' : ''}
     >
-      <span class="ds-tab-icon">${DS_ICONS[ds.id] || '📁'}</span>
-      <span class="ds-tab-name">${ds.name}</span>
+      <span class="ds-tab-icon">${meta.icon}</span>
+      <span class="ds-tab-name">${ds.name}${badge3d}</span>
       <span class="ds-tab-count">${ds.category_count} cats</span>
-    </button>
-  `).join('');
+    </button>`;
+  }).join('');
 }
 
 async function switchDataset(dsId, animate = true) {
@@ -198,10 +212,12 @@ function renderImageGrid(images) {
     area.innerHTML = '<div class="empty-state"><p>No images found</p></div>';
     return;
   }
+  const is3d = state.dataset === 'mvtec_ad3';
   area.innerHTML = `<div class="image-grid">${images.map(img => `
     <div class="image-card" onclick="openImage('${escAttr(img.path)}', '${escAttr(img.filename)}')">
       <img src="/api/image?path=${encodeURIComponent(img.path)}" alt="${escAttr(img.filename)}" loading="lazy"/>
       ${img.is_anomaly ? '<div class="card-anomaly-badge">⚠</div>' : ''}
+      ${is3d ? '<div class="card-3d-badge">3D</div>' : ''}
       <div class="card-overlay">
         <span class="card-filename">${img.filename}</span>
       </div>
@@ -408,12 +424,14 @@ function updateBreadcrumb() {
   }
   const defect = state.defectTypes.find(d => d.id === state.defect);
   const defectLabel = defect ? defect.label : state.defect;
+  const is3d = state.dataset === 'mvtec_ad3';
+  const badge3d = is3d ? '<span class="bc-3d-badge">📐 3D · RGB</span>' : '';
 
   el.innerHTML = state.defect
     ? `<span class="bc-crumb">${icon(state.category)} ${state.category}</span>
        <span class="bc-sep">/</span>
-       <span class="bc-crumb">${defectLabel}</span>`
-    : `<span class="bc-crumb">${icon(state.category)} ${state.category}</span>`;
+       <span class="bc-crumb">${defectLabel}</span>${badge3d}`
+    : `<span class="bc-crumb">${icon(state.category)} ${state.category}</span>${badge3d}`;
 }
 
 function clearDefectList() {

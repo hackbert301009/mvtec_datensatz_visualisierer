@@ -100,6 +100,19 @@ mvtec_ad_2/
 └── ...
 ```
 
+**MVTec 3D AD structure** (`category/train/good/rgb/`, `category/test/{defect}/rgb/`):
+```
+data/                          ← archive extracts here directly (no wrapper folder)
+├── bagel/
+│   ├── train/good/{rgb,xyz}/  ← rgb = colour, xyz = 3-D point cloud
+│   ├── validation/good/{rgb,xyz}/
+│   └── test/{crack,hole,contamination,combined,good}/{rgb,xyz,gt}/
+├── cable_gland/  carrot/  cookie/  dowel/  foam/
+├── peach/  potato/  rope/  tire/
+└── ...
+```
+> The viewer uses only the **rgb** images; `xyz` point-cloud data is stored alongside but not loaded.
+
 ---
 
 ## Start the Server
@@ -147,7 +160,7 @@ Training takes **3–8 minutes per category** on CPU.
 | GET | `/api/models?dataset=mvtec_ad` | List trained categories |
 
 ---
-test
+
 ## How It Works
 
 **PaDiM** (Patch Distribution Modeling) is a training-free anomaly detection method:

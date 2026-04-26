@@ -14,6 +14,11 @@ MVTEC_AD2_CATEGORIES = [
     "sheet_metal", "vial", "wallplugs", "walnuts",
 ]
 
+MVTEC_AD3_CATEGORIES = [
+    "bagel", "cable_gland", "carrot", "cookie",
+    "dowel", "foam", "peach", "potato", "rope", "tire",
+]
+
 # AD2 defect-type keys use "__" as path separator to avoid URL issues
 _AD2_SPLITS = [
     ("test_public__good",    "test · good",    False),
@@ -164,11 +169,69 @@ class MVTecAD2Discovery(BaseDiscovery):
         return [img["path"] for img in self.list_images(category, "test_public__good")]
 
 
+class MVTecAD3Discovery(BaseDiscovery):
+    """MVTec 3D Anomaly Detection — category/test/{defect}/rgb/ for images.
+    Training uses category/train/good/rgb/.
+    The archive extracts without a top-level folder, so root may be a shared
+    data directory; we only return known AD3 category names to avoid collisions.
+    """
+
+    def list_categories(self) -> list[str]:
+        if not self.root.exists():
+            return []
+        found = {d.name for d in self.root.iterdir() if d.is_dir()}
+        return [c for c in MVTEC_AD3_CATEGORIES if c in found]
+
+    def list_defect_types(self, category: str) -> list[dict]:
+        test_dir = self.root / category / "test"
+        if not test_dir.exists():
+            return []
+        names = sorted(d.name for d in test_dir.iterdir() if d.is_dir())
+        if "good" in names:
+            names.remove("good")
+            names.append("good")
+        return [
+            {"id": name, "label": name, "is_anomaly": name != "good"}
+            for name in names
+        ]
+
+    def list_images(self, category: str, defect_id: str) -> list[dict]:
+        rgb_dir = self.root / category / "test" / defect_id / "rgb"
+        if not rgb_dir.exists():
+            # Fallback: try direct folder (no rgb subfolder)
+            rgb_dir = self.root / category / "test" / defect_id
+        if not rgb_dir.exists():
+            return []
+        images = sorted(
+            p for p in rgb_dir.iterdir()
+            if p.suffix.lower() in _IMAGE_EXTENSIONS
+        )
+        is_anomaly = defect_id != "good"
+        return [{"path": str(p), "filename": p.name, "is_anomaly": is_anomaly} for p in images]
+
+    def get_train_paths(self, category: str) -> list[str]:
+        train_dir = self.root / category / "train" / "good" / "rgb"
+        if not train_dir.exists():
+            raise FileNotFoundError(f"Training dir not found: {train_dir}")
+        paths = sorted(
+            str(p) for p in train_dir.iterdir()
+            if p.suffix.lower() in _IMAGE_EXTENSIONS
+        )
+        if not paths:
+            raise RuntimeError(f"No training images found in {train_dir}")
+        return paths
+
+    def get_good_test_images(self, category: str) -> list[str]:
+        return [img["path"] for img in self.list_images(category, "good")]
+
+
 def create_discovery(dataset_type: str, root: str | Path) -> BaseDiscovery:
     if dataset_type == "mvtec_ad":
         return MVTecADDiscovery(root)
     if dataset_type == "mvtec_ad2":
         return MVTecAD2Discovery(root)
+    if dataset_type == "mvtec_ad3":
+        return MVTecAD3Discovery(root)
     raise ValueError(f"Unknown dataset type: {dataset_type!r}")
 
 
